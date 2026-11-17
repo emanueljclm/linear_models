@@ -19,8 +19,8 @@ library(tidyverse)
 
 ``` r
 library(p8105.datasets)
-library(modelr)
-library(mgcv)
+library(modelr)          # add_predictions(), rmse(), crossv_mc()
+library(mgcv)            # gam() for smooth, nonlinear models
 ```
 
     ## Loading required package: nlme
@@ -40,10 +40,10 @@ data("lidar")
 
 lidar_df = 
   lidar |> 
-  mutate(id = row_number()) |> 
-  select(id, everything())
+  mutate(id = row_number()) |>             # give each row an id, so training and testing rows can be matched later
+  select(id, everything())                 # move id to the first column
 
-lidar_df |> 
+lidar_df |>                                # a clearly nonlinear relationship, which makes a good test case for comparing models
   ggplot(aes(x = range, y = logratio)) + 
   geom_point()
 ```
@@ -53,14 +53,14 @@ lidar_df |>
 Building Training and Testing Datasets
 
 ``` r
-train_df = sample_frac(lidar_df, size = .8)
-test_df  = anti_join(lidar_df, train_df, by = "id")
+train_df = sample_frac(lidar_df, size = .8)           # random 80% of rows for training (newer equivalent: slice_sample(prop = .8))
+test_df  = anti_join(lidar_df, train_df, by = "id")   # the remaining 20%: rows whose id is NOT in train_df
 ```
 
 ``` r
-ggplot(train_df, aes(x = range, y = logratio)) + 
+ggplot(train_df, aes(x = range, y = logratio)) +    # training data in black
   geom_point() + 
-  geom_point(data = test_df, color = "red")
+  geom_point(data = test_df, color = "red")         # testing data in red
 ```
 
 ![](02_cross_validation_files/figure-gfm/unnamed-chunk-4-1.png)<!-- -->
@@ -68,26 +68,27 @@ ggplot(train_df, aes(x = range, y = logratio)) +
 Fit Some Models
 
 ``` r
-linear_mod = lm(logratio ~ range, data = train_df)
-smooth_mod = gam(logratio ~ s(range), data = train_df)
-wiggly_mod = gam(logratio ~ s(range, k = 30), sp = 10e-6, data = train_df)
+linear_mod = lm(logratio ~ range, data = train_df)                           # a straight line: too simple for this curve
+smooth_mod = gam(logratio ~ s(range), data = train_df)                       # s() fits a smooth curve; gam() picks how smooth automatically
+wiggly_mod = gam(logratio ~ s(range, k = 30), sp = 10e-6, data = train_df)   # k = 30 allows a very flexible curve and a tiny sp (smoothing
+                                                                             # parameter) forces it to chase noise: deliberately overfit
 ```
 
 Make a Plot
 
 ``` r
 train_df |>
-  add_predictions(linear_mod) |>               # shows fitted data points and lines that go through them
+  add_predictions(linear_mod) |>               # adds a `pred` column with the model's prediction for each row
   ggplot(aes(x = range, y = logratio)) +
   geom_point() +
-  geom_line(aes(y = pred), color = "red")
+  geom_line(aes(y = pred), color = "red")      # red line connects the predictions (the fitted model)
 ```
 
 ![](02_cross_validation_files/figure-gfm/unnamed-chunk-6-1.png)<!-- -->
 
 ``` r
 train_df |>
-  add_predictions(smooth_mod) |>               # smooth_mod [...]
+  add_predictions(smooth_mod) |>               # same plot for the smooth model, which follows the data's curve
   ggplot(aes(x = range, y = logratio)) +
   geom_point() +
   geom_line(aes(y = pred), color = "red")
@@ -98,22 +99,24 @@ train_df |>
 Do a Model Comparison
 
 ``` r
+# RMSE (root mean squared error) on the TESTING data: how far predictions are from new
+# observations, on average. Lower is better.
 rmse(linear_mod, test_df)
 ```
 
-    ## [1] 0.1212343
+    ## [1] 0.1338127
 
 ``` r
 rmse(smooth_mod, test_df)
 ```
 
-    ## [1] 0.06814752
+    ## [1] 0.08407828
 
 ``` r
 rmse(wiggly_mod, test_df)
 ```
 
-    ## [1] 0.07328329
+    ## [1] 0.1029337
 
 ## Repeat Multiple Times
 
@@ -121,9 +124,9 @@ Use Nice Tools
 
 ``` r
 cv_df =
-  crossv_mc(lidar_df, 100)
+  crossv_mc(lidar_df, 100)   # 100 random 80/20 training/testing splits ("Monte Carlo" cross-validation)
 
-cv_df |> pull(train) |> nth(2) |> as_tibble()    # `nth()` restores row numbers initially, leaves out 1 and 4 in second instance; gives 80-20 split every time
+cv_df |> pull(train) |> nth(2) |> as_tibble()    # inspect the 2nd training set. Splits are stored as "resample" objects (lists of row
 ```
 
     ## # A tibble: 176 × 3
@@ -131,9 +134,9 @@ cv_df |> pull(train) |> nth(2) |> as_tibble()    # `nth()` restores row numbers 
     ##    <int> <dbl>    <dbl>
     ##  1     1   390  -0.0504
     ##  2     2   391  -0.0601
-    ##  3     3   393  -0.0419
-    ##  4     4   394  -0.0510
-    ##  5     5   396  -0.0599
+    ##  3     4   394  -0.0510
+    ##  4     5   396  -0.0599
+    ##  5     6   397  -0.0284
     ##  6     7   399  -0.0596
     ##  7     8   400  -0.0399
     ##  8     9   402  -0.0294
@@ -142,10 +145,14 @@ cv_df |> pull(train) |> nth(2) |> as_tibble()    # `nth()` restores row numbers 
     ## # ℹ 166 more rows
 
 ``` r
+                                                 # numbers, to save memory); as_tibble() turns one back into a regular dataframe
+```
+
+``` r
 cv_df =
   crossv_mc(lidar_df, 100) |>
   mutate(
-    train = map(train, as_tibble),
+    train = map(train, as_tibble),   # convert every split to a tibble, since some model functions (like gam) don't accept resample objects
     test = map(test, as_tibble)
   )
 ```
@@ -153,6 +160,7 @@ cv_df =
 Let’s Fit Models and Get RMSEs for These
 
 ``` r
+# A small wrapper around rmse(). It isn't used below, since map2_dbl() calls rmse() directly
 rmse_comp = function(model, dataset) {
   
   rmse(model, dataset)
@@ -164,11 +172,13 @@ rmse_comp = function(model, dataset) {
 cv_df = 
   cv_df |> 
   mutate(
+    # fit each model to each of the 100 training sets; \(df) is shorthand for function(df)
     linear_fit = map(train, \(df) lm(logratio ~ range, data = df)),
     smooth_fit = map(train, \(df) gam(logratio ~ s(range), data = df)),
     wiggly_fit = map(train, \(df) gam(logratio ~ s(range, k = 30), sp = 10e-6, data = df))
   ) |> 
   mutate(
+    # map2_dbl() pairs each model with its matching testing set and returns one RMSE (a number) per split
     rmse_linear = map2_dbl(linear_fit, test, rmse),
     rmse_smooth = map2_dbl(smooth_fit, test, rmse),
     rmse_wiggly = map2_dbl(wiggly_fit, test, rmse)
@@ -179,15 +189,15 @@ Look at This
 
 ``` r
 cv_df |>
-  select(starts_with("rmse_")) |>
-  pivot_longer(
+  select(starts_with("rmse_")) |>   # keep only the RMSE columns
+  pivot_longer(                     # long format: one row per split x model
     everything(),
     names_to = "model",
-    names_prefix = "rmse_",
+    names_prefix = "rmse_",         # strip the prefix so model = "linear", "smooth", or "wiggly"
     values_to = "rmse"
   ) |>
   ggplot(aes(x = model, y = rmse)) +
-  geom_violin()
+  geom_violin()                     # RMSE distribution across the 100 splits: lower and tighter means better prediction
 ```
 
 ![](02_cross_validation_files/figure-gfm/unnamed-chunk-12-1.png)<!-- -->
@@ -198,8 +208,8 @@ cv_df |>
 growth_df =
   read_csv("data/nepalese_children.csv") |>
   mutate(
-    weight_ch7 = (weight > 7) * (weight - 7)
-  )
+    weight_ch7 = (weight > 7) * (weight - 7)   # piecewise term: (weight > 7) is TRUE/FALSE, which multiplies as 1/0. So it's 0 at or
+  )                                            # below 7 kg and (weight - 7) above it, letting the slope change at 7 kg
 ```
 
     ## Rows: 2705 Columns: 5
@@ -213,7 +223,7 @@ growth_df =
 Look at This
 
 ``` r
-growth_df    # weight as a predictor
+growth_df    # outcome: armc (arm circumference); predictor: weight
 ```
 
     ## # A tibble: 2,705 × 6
@@ -240,9 +250,9 @@ growth_df |>
 ![](02_cross_validation_files/figure-gfm/unnamed-chunk-14-1.png)<!-- -->
 
 ``` r
-linear_fit = lm(armc ~ weight, data = growth_df)
-pwl_fit = lm(armc ~ weight + weight_ch7, data = growth_df)
-smooth_fit = gam(armc ~ s(weight), data = growth_df)
+linear_fit = lm(armc ~ weight, data = growth_df)               # one straight line
+pwl_fit = lm(armc ~ weight + weight_ch7, data = growth_df)     # piecewise linear: two connected segments that bend at 7 kg
+smooth_fit = gam(armc ~ s(weight), data = growth_df)           # smooth curve
 ```
 
 ``` r
@@ -257,7 +267,7 @@ growth_df |>
 
 ``` r
 growth_df |>
-  add_predictions(pwl_fit) |>                  # piece-wise linar model
+  add_predictions(pwl_fit) |>                  # piecewise linear model
   ggplot(aes(x = weight, y = armc)) +
   geom_point(alpha = .5) +
   geom_line(aes(y = pred), color = "red")
@@ -269,7 +279,7 @@ Conducting all the CV Covered
 
 ``` r
 cv_df =
-  crossv_mc(growth_df, 100) |>
+  crossv_mc(growth_df, 100) |>       # 100 random training/testing splits of the growth data
   mutate(
     train = map(train, as_tibble),
     test = map(test, as_tibble)
@@ -296,7 +306,7 @@ cv_df =
 Plotting
 
 ``` r
-cv_df |> 
+cv_df |>                             # compare prediction error across the three models
   select(starts_with("rmse_")) |> 
   pivot_longer(
     everything(),
