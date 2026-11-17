@@ -13,7 +13,7 @@ library(tidyverse)
 library(p8105.datasets)
 ```
 
-## Airnbnb
+## Airbnb Example
 
 ```{r}
 data("nyc_airbnb")
@@ -21,45 +21,51 @@ data("nyc_airbnb")
 nyc_airbnb = 
   nyc_airbnb |> 
   mutate(
-    stars = review_scores_location / 2
+    stars = review_scores_location / 2                     # converts the 0-10 location score to a 0-5 star scale
   ) |> 
-  rename(
+  rename(                                                  # rename(new_name = old_name)
     borough = neighbourhood_group,
     neighborhood = neighbourhood
   ) |> 
   filter(
-    borough != "Staten Island"
+    borough != "Staten Island"                             # drops Staten Island (due to its very few listings)
   ) |> 
-  select(price, stars, borough, neighborhood, room_type)
+  select(price, stars, borough, neighborhood, room_type)   # keeps only the variables used in the models
 ```
 
 Fit a Linear Regression
 
 ```{r}
+# `lm(outcome ~ predictor1 + predictor2, data = ...)`: price as a function of stars and borough.
+# borough is categorical, so R creates an indicator (dummy) variable for each borough,
+# compared against a reference category: the first level alphabetically, here the Bronx
+
 fit = lm(price ~ stars + borough, data = nyc_airbnb)
 ```
 
 Look at the Results
 
 ```{r}
-fit
-summary(fit)
-coef(fit)
-fitted.values(fit) # will print out all 40,000 fitted values
-resid(fit)
+fit                   # coefficients only
+summary(fit)          # coefficients, standard errors, t-statistics, p-values, R-squared
+coef(fit)             # just the coefficient estimates, as a named vector
+fitted.values(fit)    # predicted price for every listing (prints all ~40,000)
+resid(fit)            # residuals: observed price minus predicted price
 
-names(fit)
-names(summary(fit)) # allows you to analyze different statistics from summary
+names(fit)            # the components stored inside the model object
+names(summary(fit))   # components of the summary (e.g., r.squared), which you can pull out individually
 ```
 
 Most of this Output is Bad; Let's Use Broom
 
 ```{r}
+# `broom::tidy()` turns the coefficient table into a tidy dataframe (one row per term), so it can be filtered, mutated, and formatted like any other data
+
 broom::tidy(fit) |>
   select(-std.error) |>
   knitr::kable(digits = 3)
 
-broom::glance(fit)
+broom::glance(fit)    # one-row summary of overall model fit: R-squared, AIC, number of observations, etc.
 ```
 
 Change the Reference Category
@@ -68,32 +74,32 @@ Change the Reference Category
 fit =
   nyc_airbnb |>
   mutate(
-    borough = fct_infreq(borough)
+    borough = fct_infreq(borough)         # reorders levels by frequency, so the most common borough (Manhattan) becomes the reference
   ) |>
-  lm(price ~ stars + borough, data = _)
+  lm(price ~ stars + borough, data = _)   # `_` is the native pipe placeholder: lm()'s first argument is the formula, so `data = _` tells the pipe where to send the data
 
 broom::tidy(fit) |>
   select(-std.error, -statistic) |>
-  mutate(term = str_replace(term, "borough", "Borough: ")) |>
+  mutate(term = str_replace(term, "borough", "Borough: ")) |>   # readable labels: "boroughBrooklyn" becomes "Borough: Brooklyn"
   knitr::kable(digits = 3)
 ```
 
 ## Diagnostics
 
-Diagnostics refers to anaylzing the Residuals
+Diagnostics efers to analyzing the residuals
 
 ```{r}
-modelr::add_residuals(nyc_airbnb, fit)
+modelr::add_residuals(nyc_airbnb, fit)   # adds a `resid` column (observed - predicted price) to the data
 ```
 
 
 ```{r}
-nyc_airbnb |>                               # creates a scatterplot of skewed residual distribution, not constant
+nyc_airbnb |>                               # residuals vs. stars: spread isn't constant, and a few very high prices skew it
   modelr::add_residuals(fit) |>
   ggplot(aes(x = stars, y = resid)) +
   geom_point()
 
-nyc_airbnb |>                               # creates a violin plot of skewed residual distribution, not constant                      
+nyc_airbnb |>                               # residuals by borough: long upper tails, so residuals aren't normal or constant
   modelr::add_residuals(fit) |>
   ggplot(aes(x = borough, y = resid)) +
   geom_violin()
@@ -102,6 +108,8 @@ nyc_airbnb |>                               # creates a violin plot of skewed re
 ## Hypothesis Testing
 
 ```{r}
+# the p.value column tests whether each coefficient differs from 0 (a t-test for each term)
+
 broom::tidy(fit) |>
   mutate(term = str_replace(term, "borough", "Borough: ")) |>
   knitr::kable(digits = 3)
@@ -110,6 +118,8 @@ broom::tidy(fit) |>
 Try Testing Nested Models
 
 ```{r}
+# Nested models: the null model is the alternative model with some terms removed. `anova()` runs an F-test of whether adding borough (all of its indicator terms at once) significantly improves the fit, which a single coefficient's p-value can't tell you
+
 fit_null = lm(price ~ stars, data = nyc_airbnb)
 fit_alt = lm(price ~ stars + borough, data = nyc_airbnb)
 
@@ -122,7 +132,7 @@ Trying More Complicated Models
 
 ```{r}
 nyc_airbnb |>
-  lm(price ~ stars * borough + room_type * borough, data = _) |> # tests the interaction between stars and boroughs, asks whether number of stars affects room type between boroughs
+  lm(price ~ stars * borough + room_type * borough, data = _) |> # `*` adds main effects and interactions: tests whether the effect of stars on price, and the effect of room type, differ by borough
   broom::tidy() |>
   knitr::kable(digits = 3)
 ```
@@ -130,12 +140,14 @@ nyc_airbnb |>
 Determining What's Happening in Manhattan
 
 ```{r}
+# The same model fit separately within one borough at a time
+
 nyc_airbnb |>
   filter(borough == "Manhattan") |>
   lm(price ~ stars + room_type, data = _) |>
   broom::tidy()
-  
-  nyc_airbnb |>
+
+nyc_airbnb |>
   filter(borough == "Bronx") |>
   lm(price ~ stars + room_type, data = _) |>
   broom::tidy()
@@ -144,6 +156,8 @@ nyc_airbnb |>
 Let's Fix This With Iteration
 
 ```{r}
+# Wrapping the model in a function lets map() apply it to many datasets
+
 airbnb_lm = function(data) {
 
   lm(price ~ stars + room_type, data = data)
@@ -153,15 +167,15 @@ airbnb_lm = function(data) {
 
 ```{r}
 nyc_airbnb |>
-  nest(datasets = -borough) |>
+  nest(datasets = -borough) |>          # one row per borough; `datasets` is a list column holding that borough's data
   mutate(
-    fits = map(datasets, airbnb_lm),
-    results = map(fits, broom::tidy)      # tidies up the results of each linear model fits
+    fits = map(datasets, airbnb_lm),    # fits the model to each borough's data
+    results = map(fits, broom::tidy)    # tidies up the results of each linear model fit
   ) |>
-  select(-datasets, -fits) |>
-  unnest(results) |>
+  select(-datasets, -fits) |>           # drops the list columns that are no longer needed
+  unnest(results) |>                    # expands the tidy tables: one row per borough x term
   select(borough, term, estimate) |>
-  pivot_wider(
+  pivot_wider(                          # one column per term, to compare coefficients across boroughs
     names_from = term,
     values_from = estimate
   )
@@ -171,7 +185,7 @@ nyc_airbnb |>
 nyc_airbnb |>
   nest(datasets = -borough) |>
   mutate(
-    fits = map(datasets, \(data) lm(price ~ stars, data = data)), # acts as a shorthand for this function
+    fits = map(datasets, \(data) lm(price ~ stars, data = data)), # `\(data)` is shorthand for function(data): an anonymous function written in place
     results = map(fits, broom::tidy)
   ) |>
   select(-datasets, -fits) |>
@@ -184,6 +198,8 @@ nyc_airbnb |>
 ```
 
 ```{r}
+# Same approach within Manhattan, with one model per neighborhood. The plot shows how the price difference for a private room (vs. an entire home/apt) varies across neighborhoods
+
 nyc_airbnb |>
   filter(borough == "Manhattan") |>
   nest(datasets = -neighborhood) |>
@@ -193,10 +209,10 @@ nyc_airbnb |>
   ) |>
   select(neighborhood, results) |>
   unnest(results) |>
-  filter(term == "room_typePrivate room") |>
+  filter(term == "room_typePrivate room") |>                    # keeps only the private room coefficient
   ggplot(aes(x = neighborhood, y = estimate)) +
   geom_point() +
-  theme(axis.text.x = element_text(angle = 80, hjust = 1))
+  theme(axis.text.x = element_text(angle = 80, hjust = 1))      # rotates neighborhood labels so they don't overlap
 ```
 
 ## Logistic Regression
@@ -208,8 +224,8 @@ baltimore_df =
   read_csv("data/homicide-data.csv") |>
   filter(city == "Baltimore") |>
   mutate(
-    resolved = as.numeric(disposition == "Closed by arrest"),
-    victim_age = as.numeric(victim_age)
+    resolved = as.numeric(disposition == "Closed by arrest"),   # binary outcome: 1 if solved by arrest, 0 otherwise
+    victim_age = as.numeric(victim_age)                         # "Unknown" ages become NA (a warning here is expected)
   )
 ```
 
@@ -218,13 +234,12 @@ Fit the Logistic Regression
 ```{r}
 fit_logistic = 
   baltimore_df |>
-  mutate(victim_race = fct_infreq(victim_race)) |>
-  glm(resolved ~ victim_age + victim_race, data = _, family = binomial())
+  mutate(victim_race = fct_infreq(victim_race)) |>                          # most common race becomes the reference category
+  glm(resolved ~ victim_age + victim_race, data = _, family = binomial())   # `glm()` with family = `binomial()` fits a logistic regression
 
 fit_logistic |>
   broom::tidy() |>
-  mutate(OR = exp(estimate)) |>
+  mutate(OR = exp(estimate)) |>               # coefficients are on the log-odds scale; `exp()` converts them to odds ratios
   select(term, OR, estimate, p.value) |>
   knitr::kable(digits = 3)
 ```
-
