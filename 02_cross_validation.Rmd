@@ -1,0 +1,219 @@
+---
+title: "02_cross_validation"
+output: github_document
+date: "2026-11-17"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(p8105.datasets)
+library(modelr)
+library(mgcv)
+```
+
+## LIDAR Data
+
+```{r}
+data("lidar")
+
+lidar_df = 
+  lidar |> 
+  mutate(id = row_number()) |> 
+  select(id, everything())
+
+lidar_df |> 
+  ggplot(aes(x = range, y = logratio)) + 
+  geom_point()
+```
+
+Building Training and Testing Datasets
+
+```{r}
+train_df = sample_frac(lidar_df, size = .8)
+test_df  = anti_join(lidar_df, train_df, by = "id")
+```
+
+```{r}
+ggplot(train_df, aes(x = range, y = logratio)) + 
+  geom_point() + 
+  geom_point(data = test_df, color = "red")
+```
+
+Fit Some Models
+
+```{r}
+linear_mod = lm(logratio ~ range, data = train_df)
+smooth_mod = gam(logratio ~ s(range), data = train_df)
+wiggly_mod = gam(logratio ~ s(range, k = 30), sp = 10e-6, data = train_df)
+```
+
+Make a Plot
+
+```{r}
+train_df |>
+  add_predictions(linear_mod) |>               # shows fitted data points and lines that go through them
+  ggplot(aes(x = range, y = logratio)) +
+  geom_point() +
+  geom_line(aes(y = pred), color = "red")
+
+train_df |>
+  add_predictions(smooth_mod) |>               # smooth_mod [...]
+  ggplot(aes(x = range, y = logratio)) +
+  geom_point() +
+  geom_line(aes(y = pred), color = "red")
+```
+
+Do a Model Comparison
+
+```{r}
+rmse(linear_mod, test_df)
+rmse(smooth_mod, test_df)
+rmse(wiggly_mod, test_df)
+```
+
+## Repeat Multiple Times
+
+Use Nice Tools
+
+```{r}
+cv_df =
+  crossv_mc(lidar_df, 100)
+
+cv_df |> pull(train) |> nth(2) |> as_tibble()    # `nth()` restores row numbers initially, leaves out 1 and 4 in second instance; gives 80-20 split every time
+```
+
+```{r}
+cv_df =
+  crossv_mc(lidar_df, 100) |>
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+Let's Fit Models and Get RMSEs for These
+
+```{r}
+rmse_comp = function(model, dataset) {
+  
+  rmse(model, dataset)
+  
+}
+```
+
+```{r}
+cv_df = 
+  cv_df |> 
+  mutate(
+    linear_fit = map(train, \(df) lm(logratio ~ range, data = df)),
+    smooth_fit = map(train, \(df) gam(logratio ~ s(range), data = df)),
+    wiggly_fit = map(train, \(df) gam(logratio ~ s(range, k = 30), sp = 10e-6, data = df))
+  ) |> 
+  mutate(
+    rmse_linear = map2_dbl(linear_fit, test, rmse),
+    rmse_smooth = map2_dbl(smooth_fit, test, rmse),
+    rmse_wiggly = map2_dbl(wiggly_fit, test, rmse)
+  )
+```
+
+Look at This
+
+```{r}
+cv_df |>
+  select(starts_with("rmse_")) |>
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    names_prefix = "rmse_",
+    values_to = "rmse"
+  ) |>
+  ggplot(aes(x = model, y = rmse)) +
+  geom_violin()
+```
+
+## Child Growth Example
+
+```{r}
+growth_df =
+  read_csv("data/nepalese_children.csv") |>
+  mutate(
+    weight_ch7 = (weight > 7) * (weight - 7)
+  )
+```
+
+Look at This
+
+```{r}
+growth_df    # weight as a predictor
+
+growth_df |>
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5)
+```
+
+```{r}
+linear_fit = lm(armc ~ weight, data = growth_df)
+pwl_fit = lm(armc ~ weight + weight_ch7, data = growth_df)
+smooth_fit = gam(armc ~ s(weight), data = growth_df)
+```
+
+```{r}
+growth_df |>
+  add_predictions(linear_fit) |>               # linear model
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red")
+
+growth_df |>
+  add_predictions(pwl_fit) |>                  # piece-wise linar model
+  ggplot(aes(x = weight, y = armc)) +
+  geom_point(alpha = .5) +
+  geom_line(aes(y = pred), color = "red")
+```
+
+Conducting all the CV Covered
+
+```{r}
+cv_df =
+  crossv_mc(growth_df, 100) |>
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble)
+  )
+```
+
+Fitting Models and Getting RMSEs
+
+```{r}
+cv_df = 
+  cv_df |> 
+  mutate(
+    linear_fit = map(train, \(df) lm(armc ~ weight, data = df)),
+    pwl_fit    = map(train, \(df) lm(armc ~ weight + weight_ch7, data = df)),
+    smooth_fit = map(train, \(df) gam(armc ~ s(weight), data = df))
+  ) |> 
+  mutate(
+    rmse_linear = map2_dbl(linear_fit, test, rmse),
+    rmse_pwl    = map2_dbl(pwl_fit, test, rmse),
+    rmse_smooth = map2_dbl(smooth_fit, test, rmse)
+  )
+```
+
+Plotting
+
+```{r}
+cv_df |> 
+  select(starts_with("rmse_")) |> 
+  pivot_longer(
+    everything(),
+    names_to = "model",
+    names_prefix = "rmse_",
+    values_to = "rmse"
+  ) |> 
+  ggplot(aes(x = model, y = rmse)) + 
+  geom_violin()
+```
